@@ -6,3 +6,5 @@ scikit-learn==1.2.2
 sqlalchemy-mate==1.4.28.4
 uszipcode==1.0.1
 optuna
+plotly 
+kaleido
