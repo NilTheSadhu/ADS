@@ -22,7 +22,7 @@ import plotly
 import kaleido
 import os
 from imblearn.over_sampling import SMOTE
-
+import ast
 #Note use: sqlalchemy-mate==1.4.28.4 uszipcode==1.0.1
 warnings.filterwarnings('ignore')
 
@@ -1170,3 +1170,118 @@ else:
 print("\n=============================================")
 print("DEEP LEARNING ANALYSIS WITH HPO COMPLETE")
 print("=============================================")
+
+
+
+misclassified_logs_path = "model_outputs"
+data_path = "telco_churn_data.csv"
+analysis_output_folder = "misclassification_analysis"
+os.makedirs(analysis_output_folder, exist_ok=True)
+
+# Load full dataset
+try:
+    df_full = pd.read_csv(data_path)
+except FileNotFoundError:
+    print(f"ERROR: Full dataset not found at {data_path}. Please check the path.")
+    exit()
+
+# Add County feature from Zip Code if needed
+if "County" not in df_full.columns and "Zip Code" in df_full.columns:
+    print("Generating 'County' feature from 'Zip Code' using uszipcode...")
+    search = SearchEngine()
+    def get_county_by_zip(zip_code):
+        result = search.by_zipcode(zip_code)
+        return result.county if result else None
+    df_full["County"] = df_full["Zip Code"].apply(get_county_by_zip)
+
+# Models to analyze
+model_names = ["BasicNN", "DeepNN", "ResNet", "AttentionNN"]
+
+# Analysis Function
+def detailed_feature_analysis(model_name):
+    print(f"\n--- Analyzing Misclassifications for Model: {model_name} ---")
+    misclassified_file = os.path.join(misclassified_logs_path, f"{model_name}_misclassified_samples.csv")
+
+    if not os.path.exists(misclassified_file):
+        print(f"Misclassification file not found for {model_name}: {misclassified_file}")
+        return
+
+    df_misclassified = pd.read_csv(misclassified_file)
+    if df_misclassified.empty or 'features' not in df_misclassified.columns:
+        print(f"Skipping {model_name} due to empty or missing feature column.")
+        return
+
+    # Convert features column from string to dict
+    try:
+        features_dict_series = df_misclassified['features'].apply(ast.literal_eval)
+    except Exception:
+        try:
+            features_dict_series = df_misclassified['features'].apply(eval)
+        except Exception as e:
+            print(f"Failed to parse 'features' column for {model_name}: {e}")
+            return
+
+    features_misclassified_expanded = pd.json_normalize(features_dict_series)
+    df_misclassified_combined = pd.concat([df_misclassified[['true_label']], features_misclassified_expanded], axis=1)
+
+    available_logged_features = features_misclassified_expanded.columns.tolist()
+    categorical_features_to_analyze = []
+    numeric_features_to_analyze = []
+
+    print(f"Available features in misclassified logs for {model_name}: {available_logged_features}")
+
+    for feature_name in available_logged_features:
+        if feature_name in df_full.columns:
+            if pd.api.types.is_object_dtype(df_full[feature_name]) or pd.api.types.is_bool_dtype(df_full[feature_name]):
+                categorical_features_to_analyze.append(feature_name)
+            elif pd.api.types.is_numeric_dtype(df_full[feature_name]):
+                numeric_features_to_analyze.append(feature_name)
+
+    print(f"Categorical features to analyze: {categorical_features_to_analyze}")
+    print(f"Numeric features to analyze: {numeric_features_to_analyze}")
+
+    for feature in categorical_features_to_analyze:
+        if feature not in df_misclassified_combined.columns or feature not in df_full.columns:
+            print(f"Skipping missing categorical feature '{feature}'")
+            continue
+        total_counts = df_full[feature].value_counts(normalize=True, dropna=False)
+        misclassified_counts = df_misclassified_combined[feature].value_counts(normalize=True, dropna=False)
+        compare_df = pd.DataFrame({'Full Dataset': total_counts, 'Misclassified': misclassified_counts}).fillna(0)
+        if compare_df.empty:
+            continue
+        safe_feature = feature.replace("/", "_").replace(" ", "_")
+        compare_df.plot.bar(figsize=(12, 6))
+        plt.title(f"{model_name}: Feature '{feature}' Proportion Comparison")
+        plt.ylabel('Proportion')
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        plt.savefig(os.path.join(analysis_output_folder, f"{model_name}_{safe_feature}_proportion_comparison.png"))
+        plt.close()
+
+    for feature in numeric_features_to_analyze:
+        if feature not in df_misclassified_combined.columns or feature not in df_full.columns:
+            print(f"Skipping missing numeric feature '{feature}'")
+            continue
+        full_vals = df_full[feature].dropna()
+        misclassified_vals = df_misclassified_combined[feature].dropna()
+        if full_vals.nunique() <= 1 or misclassified_vals.nunique() <= 1:
+            continue
+        safe_feature = feature.replace("/", "_").replace(" ", "_")
+        plt.figure(figsize=(10, 5))
+        sns.kdeplot(full_vals, color='blue', label='Full Dataset', fill=True, alpha=0.4)
+        sns.kdeplot(misclassified_vals, color='red', label='Misclassified', fill=True, alpha=0.4)
+        plt.title(f"{model_name}: Distribution of '{feature}'")
+        plt.xlabel(feature)
+        plt.ylabel("Density")
+        plt.legend()
+        plt.grid(True, linestyle='--', alpha=0.5)
+        plt.tight_layout()
+        plt.savefig(os.path.join(analysis_output_folder, f"{model_name}_{safe_feature}_distribution_comparison.png"))
+        plt.close()
+
+# Run analysis
+for model in model_names:
+    detailed_feature_analysis(model)
+
+print("\n Detailed misclassification analysis complete. Visuals saved to 'misclassification_analysis/'")
+
